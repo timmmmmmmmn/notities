@@ -117,7 +117,7 @@ class MainActivity : ComponentActivity() {
         })
 
         Herinneringen.channel(this)
-        pending = actionOf(intent)
+        handle(intent)
         if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(HOME)
         Updater.checkQuietly(this)
     }
@@ -141,6 +141,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Een PDF wordt eerst gekopieerd en geopend (niet op de hoofddraad), de rest kan meteen. */
+    private fun handle(intent: Intent?) {
+        val uri = intent?.data
+        if (intent?.action == Intent.ACTION_VIEW && uri != null) {
+            Thread {
+                val info = Pdf.open(this, uri)
+                runOnUiThread {
+                    if (info == null) {
+                        android.widget.Toast.makeText(this, "Deze PDF kon niet worden geopend", android.widget.Toast.LENGTH_LONG).show()
+                    } else {
+                        pending = "window.notitiesPdf && notitiesPdf($info)"
+                        runPending()
+                    }
+                }
+            }.start()
+            return
+        }
+        actionOf(intent)?.let {
+            pending = it
+            runPending()
+        }
+    }
+
     private fun runPending() {
         val js = pending ?: return
         if (!pageReady) return
@@ -149,10 +172,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        actionOf(intent)?.let {
-            pending = it
-            runPending()
-        }
+        handle(intent)
     }
 
     private fun setDarkBars(dark: Boolean) {
@@ -335,6 +355,29 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { startActivity(Intent.createChooser(send, "Delen")) }
         }
 
+        /** Inzoomen mag alleen in de PDF-weergave; de notities zelf blijven vast op schermbreedte. */
+        @JavascriptInterface
+        fun pdfZoom(on: Boolean) {
+            runOnUiThread {
+                web.settings.setSupportZoom(on)
+                web.settings.builtInZoomControls = on
+                web.settings.displayZoomControls = false
+            }
+        }
+
+        @JavascriptInterface
+        fun pdfText(token: String): String = Pdf.text(token)
+
+        @JavascriptInterface
+        fun pdfShare(token: String) {
+            runOnUiThread { Pdf.share(this@MainActivity, token) }
+        }
+
+        @JavascriptInterface
+        fun pdfOpenWith(token: String) {
+            runOnUiThread { Pdf.openWith(this@MainActivity, token) }
+        }
+
         @JavascriptInterface
         fun appVersion(): String = Updater.currentName(this@MainActivity)
 
@@ -351,6 +394,7 @@ class MainActivity : ComponentActivity() {
             if (url.host != HOST || request.method != "GET") return null
             val path = url.path ?: "/"
             if (path.startsWith("/api/")) return null
+            if (path.startsWith("/__pdf/")) return Pdf.serve(path)
             return Bundel.serve(this@MainActivity, if (path == "/" || path.isEmpty()) "/index.html" else path, null)
         }
 

@@ -15,9 +15,11 @@ const VIEWS = {
   notities: 'Notities',
   lijsten: 'Lijsten',
   herinneringen: 'Herinneringen',
+  gedeeld: 'Gedeeld',
   archief: 'Archief',
   prullenbak: 'Prullenbak'
 };
+const SOURCE = 'https://github.com/timmmmmmmmn/notities';
 
 const state = {
   me: null,
@@ -75,6 +77,8 @@ const ICONS = {
   checkbox: 'M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM8 12l3 3 5-6',
   link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
   quote: 'M5 7h5v5H6.5L5 17M14 7h5v5h-3.5L14 17',
+  code: 'M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16',
+  pdf: 'M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM14 3v5h5M9 13h1.5a1.5 1.5 0 0 1 0 3H9v-3zM9 16v2M14 13v5M14 13h2M14 15.5h1.5',
   sync: 'M20 11a8 8 0 0 0-14.3-4.3L4 9M4 4v5h5M4 13a8 8 0 0 0 14.3 4.3L20 15M20 20v-5h-5'
 };
 
@@ -303,8 +307,12 @@ function loadLocal() {
 }
 
 function normalize(n) {
-  return { labels: [], color: '', archived_at: null, remind_at: null, ...n };
+  return { labels: [], color: '', archived_at: null, remind_at: null, owner_name: null, can_write: true, shared_count: 0, ...n };
 }
+
+// Gedeeld door iemand anders, en of ik er dan in mag schrijven.
+const fromOther = (n) => !!n.owner_name;
+const readOnly = (n) => !!n.deleted_at || (fromOther(n) && !n.can_write);
 
 // Elke wijziging: als "nog niet verstuurd" markeren en straks synchroniseren.
 function touch(note, fields, { keepTime = false } = {}) {
@@ -447,6 +455,7 @@ function inView(n) {
     case 'archief': return alive(n) && !!n.archived_at;
     case 'herinneringen': return alive(n) && !!n.remind_at;
     case 'lijsten': return alive(n) && !n.archived_at && n.kind === 'lijst';
+    case 'gedeeld': return alive(n) && (fromOther(n) || n.shared_count > 0);
     default: return alive(n) && (!n.archived_at || !!state.query.trim());
   }
 }
@@ -498,6 +507,12 @@ function remindTag(n) {
   return `<span class="tag ${late ? 'late' : 'remind'}">${icon('bell')}${esc(whenAhead(n.remind_at))}</span>`;
 }
 
+function shareTag(n) {
+  if (fromOther(n)) return `<span class="tag shared">${icon('person')}Van ${esc(n.owner_name.split(' ')[0])}</span>`;
+  if (n.shared_count > 0) return `<span class="tag shared">${icon('person')}Gedeeld</span>`;
+  return '';
+}
+
 function cardHtml(n, q) {
   let body;
   if (q && !fold(n.title).includes(fold(q)) && fold(n.body).includes(fold(q))) {
@@ -514,7 +529,7 @@ function cardHtml(n, q) {
     const text = plain(n.body).trim();
     body = text ? `<span class="card-b">${esc(text.slice(0, 600))}</span>` : '';
   }
-  const foot = remindTag(n) + n.labels.map((l) => `<span class="tag">${esc(l)}</span>`).join('') +
+  const foot = remindTag(n) + shareTag(n) + n.labels.map((l) => `<span class="tag">${esc(l)}</span>`).join('') +
     (n.archived_at && state.view !== 'archief' ? '<span class="tag">Archief</span>' : '');
   const showTitle = n.title.trim() || n.kind === 'lijst' || !body;
   return `<button class="card${n.id === state.openId ? ' on' : ''}" data-id="${n.id}"${n.color ? ` data-color="${n.color}"` : ''}>
@@ -558,6 +573,7 @@ function renderList() {
         archief: 'Nog niets gearchiveerd.',
         herinneringen: 'Geen herinneringen. Tik in een notitie op het belletje om er een te zetten.',
         lijsten: 'Nog geen lijsten. Maak er een met de plusknop.',
+        gedeeld: 'Nog niets gedeeld. Open een notitie en kies in het menu “Delen met…”.',
         notities: 'Nog geen notities. Maak je eerste met de plusknop.'
       }[state.view];
     list.innerHTML = `<div class="list-empty">${icon(state.view === 'herinneringen' ? 'bell' : state.view === 'prullenbak' ? 'trash' : 'note')}<span>${msg}</span></div>`;
@@ -639,7 +655,7 @@ function syncGlassBar() {
     const names = { notities: 'note', lijsten: 'list', herinneringen: 'bell', meer: 'more' };
     const tabs = $$('#navPill [data-nav]').map((b) => ({ id: b.dataset.nav, title: b.textContent.trim(), icon: ICONS[names[b.dataset.nav]] }));
     const active = $('#navPill [aria-current="true"]')?.dataset.nav || 'notities';
-    const visible = !$('#app').hidden && $('#sheetBack').hidden && getComputedStyle($('#side')).display !== 'none';
+    const visible = !$('#app').hidden && !pdf && $('#sheetBack').hidden && getComputedStyle($('#side')).display !== 'none';
     try {
       native.glassBar(JSON.stringify({
         pill: box($('#navPill')), add: box($('#navAdd')), tabs, active,
@@ -697,7 +713,7 @@ function closeNote(fromHistory = false) {
 // Lege notitie verlaten? Dan hoeft hij niet te blijven bestaan.
 function dropIfEmpty(id) {
   const n = state.notes.get(id);
-  if (!n || n.deleted_at || n.title.trim() || n.body.replace(/\[[ x]\]/g, '').trim() || n.remind_at) return;
+  if (!n || n.deleted_at || fromOther(n) || n.title.trim() || n.body.replace(/\[[ x]\]/g, '').trim() || n.remind_at) return;
   purge(n, true);
 }
 
@@ -722,15 +738,20 @@ function fillEditor(remote = false) {
   const n = current();
   if (!n) return;
   const trash = !!n.deleted_at;
-  editor.classList.toggle('readonly', trash);
+  const locked = readOnly(n);
+  editor.classList.toggle('readonly', locked);
+  editor.classList.toggle('trashed', trash);
   if (n.color) editor.dataset.color = n.color; else delete editor.dataset.color;
-  edTitle.readOnly = trash;
-  edBody.readOnly = trash;
+  edTitle.readOnly = locked;
+  edBody.readOnly = locked;
   if (!(remote && document.activeElement === edTitle)) edTitle.value = n.title;
 
   const banner = $('#noteBanner');
-  banner.hidden = !trash && !n.archived_at;
-  if (trash) {
+  banner.hidden = !trash && !n.archived_at && !locked;
+  if (locked && !trash) {
+    $('#noteBannerText').textContent = `Gedeeld door ${n.owner_name}. Je kunt meelezen, maar niet bewerken.`;
+    $('#noteBannerActions').innerHTML = '<button class="btn small" type="button" data-act="copy">Kopie maken</button>';
+  } else if (trash) {
     $('#noteBannerText').textContent = 'Deze notitie staat in de prullenbak.';
     $('#noteBannerActions').innerHTML = '<button class="btn small" type="button" data-act="restore">Terugzetten</button><button class="btn small danger" type="button" data-act="purge">Definitief verwijderen</button>';
   } else if (n.archived_at) {
@@ -747,8 +768,8 @@ function fillEditor(remote = false) {
   renderTags();
 
   const list = n.kind === 'lijst';
-  const reading = !list && state.reading.has(n.id);
-  $('#fmtBar').hidden = list || trash;
+  const reading = !list && (state.reading.has(n.id) || locked);
+  $('#fmtBar').hidden = list || locked;
   $('#fmtBar').classList.toggle('reading', reading);
   $('#previewBtn').setAttribute('aria-pressed', String(reading));
   edBody.hidden = list || reading;
@@ -787,7 +808,9 @@ function updateRemindChip() {
 
 function renderTags() {
   const n = current();
-  $('#edTags').innerHTML = n.labels.map((l) => `<button class="tag" type="button" data-tag="${esc(l)}">${icon('tag')}${esc(l)}</button>`).join('') +
+  const share = fromOther(n) ? `<button class="tag shared" type="button" data-share>${icon('person')}Van ${esc(n.owner_name)}</button>`
+    : n.shared_count > 0 ? `<button class="tag shared" type="button" data-share>${icon('person')}Gedeeld met ${n.shared_count}</button>` : '';
+  $('#edTags').innerHTML = share + n.labels.map((l) => `<button class="tag" type="button" data-tag="${esc(l)}">${icon('tag')}${esc(l)}</button>`).join('') +
     `<button class="tag add" type="button" data-tag="">${icon('plus')}Label</button>`;
 }
 
@@ -1059,6 +1082,14 @@ function togglePin(n = current()) {
 
 function toTrash(n = current()) {
   if (!n) return;
+  if (fromOther(n)) {
+    // Niet van mij: alleen uit mijn notities halen; bij de eigenaar blijft hij gewoon bestaan.
+    if (n.id === state.openId) closeNote();
+    purge(n);
+    haptic('reject');
+    toast(`Weggehaald uit je notities (blijft bij ${n.owner_name.split(' ')[0]})`);
+    return;
+  }
   if (!n.title.trim() && !n.body.trim()) {
     if (n.id === state.openId) closeNote();
     return;
@@ -1111,6 +1142,7 @@ $('#noteBannerActions').addEventListener('click', (e) => {
   if (act === 'restore') restore();
   if (act === 'purge') purgeOpen(e.target);
   if (act === 'unarchive') archive(current(), false);
+  if (act === 'copy') duplicate(current());
 });
 
 function convert(n = current()) {
@@ -1129,7 +1161,7 @@ function convert(n = current()) {
 
 function duplicate(n = current()) {
   const t = Date.now();
-  const copy = normalize({ ...n, id: newId(), title: n.title ? `${n.title} (kopie)` : '', pinned: false, remind_at: null, created_at: t, rev: 0, dirty: 0 });
+  const copy = normalize({ ...n, id: newId(), title: n.title ? `${n.title} (kopie)` : '', pinned: false, remind_at: null, created_at: t, rev: 0, dirty: 0, owner_name: null, can_write: true, shared_count: 0 });
   touch(copy, {});
   openNote(copy.id);
   toast('Kopie gemaakt');
@@ -1374,6 +1406,139 @@ async function versionsSheet(n = current()) {
   };
 }
 
+// ---------- Delen met andere gebruikers ----------
+
+async function shareSheet(n = current()) {
+  const id = n.id;
+  const body = openSheet('Delen', '<p class="muted small">Laden…</p>');
+  if (!n.rev || n.dirty) await sync();
+  if (!state.notes.get(id)?.rev) {
+    body.innerHTML = '<p class="muted small">Deze notitie moet eerst online opgeslagen zijn. Probeer het opnieuw als je verbinding hebt.</p>';
+    return;
+  }
+  let shares = [];
+  let people = [];
+  const load = async () => {
+    [shares, people] = await Promise.all([api(`notes/${id}/shares`), api('people')]);
+  };
+  try { await load(); } catch (err) {
+    body.innerHTML = `<p class="muted small">${err.status ? esc(err.message) : 'Delen kan alleen als je online bent.'}</p>`;
+    return;
+  }
+  const draw = () => {
+    const free = people.filter((p) => !shares.some((s) => s.username === p.username));
+    body.innerHTML = `
+      <p class="muted small">Wie je toevoegt, ziet deze notitie bij zijn eigen notities. Labels, kleur en vastpinnen houdt ieder voor zich.</p>
+      <div class="group">
+        <h3>Gedeeld met</h3>
+        ${shares.length ? shares.map((s) => `<div class="share-row"><div><b>${esc(s.full_name)}</b><span>${esc(s.username)}</span></div>
+          <label><input type="checkbox" data-write="${esc(s.username)}"${s.can_write ? ' checked' : ''}>Mag bewerken</label>
+          <button class="icon-btn" type="button" data-del="${s.user_id}" aria-label="Niet meer delen met ${esc(s.full_name)}">${icon('close')}</button></div>`).join('')
+          : '<p class="muted small">Nog met niemand.</p>'}
+      </div>
+      <form class="share-add" id="shareForm">
+        <h3 class="muted small" style="margin:0">Iemand toevoegen</h3>
+        ${free.length ? `<div class="people">${free.map((p) => `<button class="chip" type="button" data-pick="${esc(p.username)}">${esc(p.full_name)}</button>`).join('')}</div>` : ''}
+        <input class="field" id="shareUser" placeholder="Gebruikersnaam" autocapitalize="none" spellcheck="false" autocomplete="off">
+        <label class="check"><input type="checkbox" id="shareWrite" checked>Mag bewerken</label>
+        <button class="btn primary" type="submit">Delen</button>
+      </form>`;
+  };
+  const save = async (username, canWrite) => {
+    try {
+      const r = await api(`notes/${id}/shares`, { method: 'POST', body: { username, can_write: canWrite } });
+      await load();
+      draw();
+      sync();
+      return r;
+    } catch (err) { toast(err.status ? err.message : 'Delen kan alleen als je online bent.'); }
+  };
+  draw();
+  body.onclick = async (e) => {
+    const pick = e.target.closest('[data-pick]');
+    if (pick) { $('#shareUser').value = pick.dataset.pick; $('#shareUser').focus(); return; }
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      try {
+        await api(`notes/${id}/shares/${del.dataset.del}`, { method: 'DELETE' });
+        await load();
+        draw();
+        sync();
+        toast('Niet meer gedeeld');
+      } catch (err) { toast(err.message); }
+    }
+  };
+  body.onchange = (e) => {
+    const w = e.target.dataset?.write;
+    if (w) save(w, e.target.checked);
+  };
+  body.onsubmit = async (e) => {
+    e.preventDefault();
+    const username = $('#shareUser').value.trim();
+    if (!username) return toast('Kies iemand of vul een gebruikersnaam in');
+    const r = await save(username, $('#shareWrite').checked);
+    if (r) { haptic('confirm'); toast(`Gedeeld met ${r.full_name}`); }
+  };
+}
+
+// ---------- PDF bekijken (de Android-app opent PDF's met Notities als je dat kiest) ----------
+
+let pdf = null;
+
+function setZoom(on) {
+  $('meta[name="viewport"]').setAttribute('content', on
+    ? 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover'
+    : 'width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content');
+  try { native?.pdfZoom?.(on); } catch (e) {}
+}
+
+window.notitiesPdf = (info) => {
+  pdf = info;
+  closeMenu();
+  closeSheet();
+  document.body.classList.add('pdf-open');
+  $('#pdfView').hidden = false;
+  $('#pdfName').textContent = info.name;
+  $('#pdfInfo').textContent = `${info.pages.length} ${info.pages.length === 1 ? 'pagina' : "pagina's"} · knijp om in te zoomen`;
+  $('#pdfPages').innerHTML = info.pages.map((p, i) =>
+    `<img src="/__pdf/${encodeURIComponent(info.token)}/${i}.jpg" width="${p.w}" height="${p.h}" loading="${i < 2 ? 'eager' : 'lazy'}" alt="Pagina ${i + 1}">`).join('');
+  window.scrollTo(0, 0);
+  setZoom(true);
+  syncGlassBar();
+  return true;
+};
+
+function closePdf() {
+  if (!pdf) return;
+  pdf = null;
+  setZoom(false);
+  document.body.classList.remove('pdf-open');
+  $('#pdfView').hidden = true;
+  $('#pdfPages').innerHTML = '';
+  syncGlassBar();
+}
+
+function pdfToNote() {
+  if (!state.me) return toast('Log eerst in om er een notitie van te maken');
+  let text = '';
+  try { text = native?.pdfText?.(pdf.token) || ''; } catch (e) {}
+  text = text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+  const file = pdf.name;
+  const name = file.replace(/\.pdf$/i, '');
+  closePdf();
+  newNote('tekst', { title: name, labels: ['PDF'], body: text.trim() || `Uit de PDF “${file}”. De tekst kon niet worden uitgelezen; tik hier om je eigen aantekeningen te schrijven.` });
+  toast(text.trim() ? 'Notitie gemaakt met de tekst uit de PDF' : 'Notitie gemaakt');
+}
+
+$('#pdfBack').addEventListener('click', closePdf);
+$('#pdfMenu').addEventListener('click', (e) => menu(e.currentTarget, [
+  { title: 'Notitie maken van de tekst', icon: 'note', run: pdfToNote },
+  { title: 'Delen', icon: 'share', run: () => native?.pdfShare?.(pdf.token) },
+  { title: 'Openen met een andere app', icon: 'pdf', run: () => native?.pdfOpenWith?.(pdf.token) },
+  { separator: true },
+  { title: 'Terug naar je notities', icon: 'back', run: closePdf }
+]));
+
 // ---------- Dagnotitie, exporteren, sneltoetsen ----------
 
 function dayNote() {
@@ -1489,14 +1654,18 @@ function noteMenu(from = $('#noteMenuBtn'), n = current()) {
   ]);
   const list = n.kind === 'lijst';
   const open = n.id === state.openId;
-  const done = open && list && parseItems(n.body).some((i) => i.done);
+  const done = open && list && !readOnly(n) && parseItems(n.body).some((i) => i.done);
+  const other = fromOther(n);
   menu(from, [
     !open && { title: n.pinned ? 'Losmaken' : 'Vastpinnen', icon: 'pin', run: () => togglePin(n) },
     { title: 'Kleur', subtitle: COLORS.find(([c]) => c === n.color)?.[1], icon: 'palette', run: () => colorMenu(from, n) },
     { title: 'Labels', subtitle: n.labels.join(', ') || 'Geen', icon: 'tag', run: () => labelSheet(n) },
     { title: n.remind_at ? 'Herinnering wijzigen' : 'Herinnering', subtitle: n.remind_at ? whenAhead(n.remind_at) : undefined, icon: 'bell', run: () => reminderSheet(n) },
+    other
+      ? { title: `Gedeeld door ${n.owner_name}`, subtitle: n.can_write ? 'Jullie kunnen allebei bewerken' : 'Alleen lezen', icon: 'person', disabled: true }
+      : { title: 'Delen met…', subtitle: n.shared_count ? `Gedeeld met ${n.shared_count}` : undefined, icon: 'person', run: () => shareSheet(n) },
     { separator: true },
-    open && { title: list ? 'Omzetten naar tekst' : 'Omzetten naar lijst', icon: list ? 'pencil' : 'list', run: () => convert(n) },
+    open && !readOnly(n) && { title: list ? 'Omzetten naar tekst' : 'Omzetten naar lijst', icon: list ? 'pencil' : 'list', run: () => convert(n) },
     done && { title: 'Alles weer openzetten', icon: 'check', run: () => saveItems(itemsOf().map((i) => ({ ...i, done: false }))) },
     done && { title: 'Afgevinkte items wissen', icon: 'trash', run: () => saveItems(itemsOf().filter((i) => !i.done)) },
     { title: 'Kopie maken', icon: 'copy', run: () => duplicate(n) },
@@ -1504,7 +1673,9 @@ function noteMenu(from = $('#noteMenuBtn'), n = current()) {
     { title: 'Eerdere versies', icon: 'history', run: () => versionsSheet(n) },
     { separator: true },
     { title: n.archived_at ? 'Terug naar notities' : 'Archiveren', icon: 'archive', run: () => archive(n, !n.archived_at) },
-    { title: 'Naar prullenbak', icon: 'trash', destructive: true, run: () => toTrash(n) }
+    other
+      ? { title: 'Weghalen uit mijn notities', icon: 'trash', destructive: true, run: () => toTrash(n) }
+      : { title: 'Naar prullenbak', icon: 'trash', destructive: true, run: () => toTrash(n) }
   ]);
 }
 
@@ -1512,11 +1683,13 @@ function moreMenu(from) {
   const count = (fn) => [...state.notes.values()].filter(fn).length;
   const trash = count((n) => !n.purged && n.deleted_at);
   const arch = count((n) => alive(n) && n.archived_at);
+  const shared = count((n) => alive(n) && (fromOther(n) || n.shared_count > 0));
   const amount = (k) => (k ? `${k} ${k === 1 ? 'notitie' : 'notities'}` : 'Leeg');
   menu(from, [
     { title: 'Dagnotitie van vandaag', icon: 'calendar', run: dayNote },
     { title: 'Nieuwe lijst', icon: 'list', run: () => newNote('lijst') },
     { separator: true },
+    { title: 'Gedeeld', subtitle: amount(shared), icon: 'person', run: () => setView('gedeeld') },
     { title: 'Archief', subtitle: amount(arch), icon: 'archive', run: () => setView('archief') },
     { title: 'Prullenbak', subtitle: amount(trash), icon: 'trash', run: () => setView('prullenbak') },
     { title: 'Labels beheren', icon: 'tag', run: manageLabels },
@@ -1524,7 +1697,8 @@ function moreMenu(from) {
     { title: 'Nu synchroniseren', subtitle: syncText(), icon: 'sync', run: () => { state.syncError = false; sync(); } },
     { title: native?.share ? 'Alles delen als tekst' : 'Alles exporteren', subtitle: 'Markdown', icon: 'download', run: exportAll },
     !isPhone() && { title: 'Sneltoetsen', icon: 'keyboard', run: shortcutsSheet },
-    { title: 'Instellingen', subtitle: state.me.full_name, icon: 'person', run: openSettings }
+    { title: 'Instellingen', subtitle: state.me.full_name, icon: 'person', run: openSettings },
+    { title: 'Broncode', subtitle: 'GitHub', icon: 'code', run: () => window.open(SOURCE, '_blank', 'noopener') }
   ]);
 }
 
@@ -1823,6 +1997,7 @@ $('#pinBtn').addEventListener('click', () => togglePin());
 $('#remindBtn').addEventListener('click', () => reminderSheet());
 $('#backBtn').addEventListener('click', () => closeNote());
 $('#edTags').addEventListener('click', (e) => {
+  if (e.target.closest('[data-share]')) return fromOther(current()) ? null : shareSheet();
   if (e.target.closest('[data-tag]')) labelSheet();
 });
 $('#search').addEventListener('input', (e) => { state.query = e.target.value; renderList(); });
@@ -1835,6 +2010,7 @@ window.addEventListener('popstate', () => {
 // Terug-knop van Android: eerst menu/paneel/notitie sluiten, dan pas de app wegzetten.
 window.notitiesBack = () => {
   if ($('.menu')) { closeMenu(); return true; }
+  if (pdf) { closePdf(); return true; }
   if (!$('#sheetBack').hidden) { closeSheet(); return true; }
   if (state.openId && isPhone()) { closeNote(); return true; }
   if (state.query) { state.query = ''; $('#search').value = ''; renderList(); return true; }
@@ -1880,4 +2056,5 @@ if ('serviceWorker' in navigator && !native) navigator.serviceWorker.register('/
 const cached = load('notities:me');
 if (cached) { state.me = cached; loadLocal(); $('#app').hidden = false; renderAll(); } // meteen tonen, daarna controleren
 theme(themePref());
+try { native?.ready?.(); } catch (e) {} // bijv. een PDF die al klaarstaat
 start();

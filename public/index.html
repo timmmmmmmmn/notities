@@ -25,7 +25,6 @@
 <div class="auth" id="auth" hidden>
   <div class="auth-card">
     <div class="auth-mast"><img src="/icons/icon-192.png" alt="" width="44" height="44"><span>Notities</span></div>
-    <div class="auth-rule"></div>
 
     <form id="loginForm" class="auth-form" novalidate>
       <h1>Inloggen</h1>
@@ -72,7 +71,6 @@
         <button class="icon-btn" id="viewBtn" type="button" aria-label="Weergave en sorteren" data-icon="sort"></button>
       </div>
     </header>
-    <div class="mast-rule"></div>
     <div class="search-wrap">
       <span data-icon="search"></span>
       <input class="search" id="search" type="search" placeholder="Zoeken in je notities" autocomplete="off" aria-label="Zoeken in notities">
@@ -201,6 +199,16 @@
     <button class="btn danger" id="logoutBtn" type="button">Uitloggen</button>
   </section>
 </template>
+
+<!-- PDF bekijken (alleen in de Android-app: "Openen met Notities") -->
+<section class="pdf" id="pdfView" hidden>
+  <header class="pdf-top">
+    <button class="icon-btn" id="pdfBack" type="button" aria-label="Terug naar je notities" data-icon="back"></button>
+    <div class="pdf-name"><b id="pdfName"></b><span id="pdfInfo"></span></div>
+    <button class="icon-btn" id="pdfMenu" type="button" aria-label="Opties" data-icon="more"></button>
+  </header>
+  <div class="pdf-pages" id="pdfPages"></div>
+</section>
 
 <div class="toast" id="toast" role="status" hidden></div>
 </body>

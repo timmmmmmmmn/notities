@@ -7,6 +7,8 @@ Notities op je telefoon en je laptop: [notities.timvanbergen.nl](https://notitie
 - Opmaak (vet, koppen, opsommingen, afvinkvakjes, links) met een leesweergave
 - Herinneringen: in de app als echte melding, op de website zolang die openstaat
 - Eerdere versies van een notitie terugzetten, dagnotitie, alles exporteren als Markdown
+- Notities delen met andere gebruikers (mag bewerken of alleen lezen); labels, kleur en vastpinnen houdt ieder voor zich
+- In de app: PDF's openen met Notities ("Openen met"), inzoomen, en er een notitie van maken met de tekst erin
 - Werkt offline: alles staat ook op het apparaat en synchroniseert vanzelf zodra je weer online bent
 - Op twee apparaten tegelijk bewerkt? Dan blijven beide versies bewaard
 - Accounts met goedkeuring: de eerste gebruiker wordt beheerder, nieuwe accounts keurt die goed in Instellingen

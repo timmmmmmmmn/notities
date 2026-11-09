@@ -99,24 +99,55 @@ async function changePassword(env, user, request) {
 }
 
 // ---------- Synchronisatie ----------
-// Elk apparaat houdt een cursor bij (de hoogste seq die het kent). Bij elke wijziging krijgt
-// de notitie het volgende nummer uit users.note_seq; dat gebeurt in dezelfde batch (transactie),
-// zodat een apparaat nooit een wijziging overslaat.
+// Elk apparaat houdt een cursor bij (de hoogste seq die het kent). Elke wijziging krijgt het volgende
+// nummer uit de gezamenlijke teller; dat gebeurt in dezelfde batch (transactie), zodat een apparaat
+// nooit een wijziging overslaat, ook niet in notities die iemand anders met je deelt.
 
-const NOTE_COLS = 'id, title, body, kind, pinned, labels, color, archived_at, remind_at, deleted_at, purged, created_at, updated_at, rev, seq';
+const NOTE_COLS = 'n.id, n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, n.purged, n.created_at, n.updated_at, n.rev, n.seq';
+const PAGE = 2000;
+
+function parseLabels(v) {
+  try { return JSON.parse(v); } catch { return []; }
+}
 
 function out(n) {
-  let labels = [];
-  try { labels = JSON.parse(n.labels); } catch {}
-  return { ...n, labels, pinned: !!n.pinned, purged: !!n.purged };
+  return { ...n, labels: parseLabels(n.labels), pinned: !!n.pinned, purged: !!n.purged };
+}
+
+// Een gedeelde notitie zoals de ontvanger hem ziet: tekst van de eigenaar, ordening van zichzelf.
+function outShared(r) {
+  if (r.deleted_at || r.purged) return { id: r.id, purged: true, seq: r.seq };
+  return {
+    ...out(r), pinned: !!r.s_pinned, labels: parseLabels(r.s_labels), color: r.s_color,
+    archived_at: r.s_archived_at, remind_at: r.s_remind_at, deleted_at: null,
+    owner_name: r.owner_name, can_write: !!r.can_write
+  };
 }
 
 async function changesSince(env, user, since) {
-  const { results } = await env.DB.prepare(
-    `SELECT ${NOTE_COLS} FROM notes WHERE user_id = ? AND seq > ? ORDER BY seq LIMIT 2000`
-  ).bind(user.id, since).all();
-  const cursor = results.length ? results[results.length - 1].seq : since;
-  return { notes: results.map(out), cursor, more: results.length === 2000 };
+  const [own, shared, gone] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT ${NOTE_COLS}, (SELECT COUNT(*) FROM note_shares s WHERE s.note_id = n.id) AS shared_count
+         FROM notes n WHERE n.user_id = ? AND n.seq > ? ORDER BY n.seq LIMIT ${PAGE}`
+    ).bind(user.id, since),
+    env.DB.prepare(
+      `SELECT ${NOTE_COLS}, s.can_write, s.pinned AS s_pinned, s.labels AS s_labels, s.color AS s_color,
+              s.archived_at AS s_archived_at, s.remind_at AS s_remind_at, u.full_name AS owner_name
+         FROM note_shares s JOIN notes n ON n.id = s.note_id JOIN users u ON u.id = n.user_id
+        WHERE s.user_id = ? AND n.seq > ?`
+    ).bind(user.id, since),
+    env.DB.prepare('SELECT note_id AS id, seq FROM share_removals WHERE user_id = ? AND seq > ?').bind(user.id, since)
+  ]);
+  const more = own.results.length === PAGE;
+  // Bij een volle pagina alleen meesturen tot waar we zijn, de rest komt de volgende keer.
+  const limit = more ? own.results[own.results.length - 1].seq : Infinity;
+  const notes = [
+    ...own.results.map(out),
+    ...shared.results.filter((r) => r.seq <= limit).map(outShared),
+    ...gone.results.filter((r) => r.seq <= limit).map((r) => ({ id: r.id, purged: true, seq: r.seq }))
+  ].sort((a, b) => a.seq - b.seq);
+  const cursor = notes.length ? Math.max(since, notes[notes.length - 1].seq) : since;
+  return { notes, cursor, more };
 }
 
 // Velden die een (oudere) app niet meestuurt, blijven zoals ze op de server staan.
@@ -135,11 +166,14 @@ function clean(c, cur = {}) {
     title: String(c.title ?? '').slice(0, MAX_TITLE),
     body: String(c.body ?? '').slice(0, MAX_BODY),
     kind,
-    pinned: c.pinned ? 1 : 0,
+    pinned: 'pinned' in c ? (c.pinned ? 1 : 0) : cur.pinned ?? 0,
     deleted_at: c.deleted_at ? Number(c.deleted_at) || now() : null,
     updated_at: Number.isFinite(t) ? Math.min(t, now() + 60e3) : now()
   };
 }
+
+const bump = (env) => env.DB.prepare('UPDATE counter SET n = n + 1 WHERE id = 1');
+const SEQ = '(SELECT n FROM counter WHERE id = 1)';
 
 async function sync(env, user, request) {
   const b = await body(request);
@@ -147,89 +181,208 @@ async function sync(env, user, request) {
   const changes = Array.isArray(b.changes) ? b.changes.slice(0, MAX_CHANGES) : [];
   const ids = changes.map((c) => String(c?.id ?? '')).filter((id) => NOTE_ID_RE.test(id));
   const existing = new Map();
+  const shares = new Map();
   if (ids.length) {
-    const { results } = await env.DB.prepare(
-      `SELECT id, user_id, title, body, kind, rev, purged, updated_at, labels, color, archived_at, remind_at FROM notes WHERE id IN (${ids.map(() => '?').join(',')})`
-    ).bind(...ids).all();
-    for (const r of results) existing.set(r.id, r);
+    const marks = ids.map(() => '?').join(',');
+    const [notes, mine] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT id, user_id, title, body, kind, rev, purged, updated_at, pinned, labels, color, archived_at, remind_at FROM notes WHERE id IN (${marks})`
+      ).bind(...ids),
+      env.DB.prepare(
+        `SELECT note_id, can_write, pinned, labels, color, archived_at, remind_at FROM note_shares WHERE user_id = ? AND note_id IN (${marks})`
+      ).bind(user.id, ...ids)
+    ]);
+    for (const r of notes.results) existing.set(r.id, r);
+    for (const r of mine.results) shares.set(r.note_id, r);
   }
 
-  const bump = () => env.DB.prepare('UPDATE users SET note_seq = note_seq + 1 WHERE id = ?').bind(user.id);
-  const seq = '(SELECT note_seq FROM users WHERE id = ?)';
   const stmts = [];
   const conflicts = [];
   const t = now();
 
-  for (const c of changes) {
-    const id = String(c?.id ?? '');
-    if (!NOTE_ID_RE.test(id)) continue;
-    const cur = existing.get(id);
-    if (cur && (cur.user_id !== user.id || cur.purged)) continue;
-
-    if (c.purged) {
-      if (!cur) continue;
-      stmts.push(bump(), env.DB.prepare(
-        `UPDATE notes SET title = '', body = '', labels = '[]', remind_at = NULL, pinned = 0, purged = 1, deleted_at = COALESCE(deleted_at, ?), rev = rev + 1, seq = ${seq} WHERE id = ?`
-      ).bind(t, user.id, id), env.DB.prepare('DELETE FROM note_versions WHERE note_id = ?').bind(id));
-      continue;
-    }
-
-    const n = clean(c, cur);
-    if (!cur) {
-      stmts.push(bump(), env.DB.prepare(
-        `INSERT INTO notes (id, user_id, title, body, kind, pinned, labels, color, archived_at, remind_at, deleted_at, created_at, updated_at, rev, seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ${seq})`
-      ).bind(id, user.id, n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, Number(c.created_at) || t, n.updated_at, user.id));
-      continue;
-    }
-
+  // Tekst is gewijzigd: zo nodig de oude tekst bewaren en de nieuwe opslaan (of een conflict melden).
+  const writeText = (id, cur, n, base) => {
     const sameText = cur.title === n.title && cur.body === n.body && cur.kind === n.kind;
-    if (Number(c.base_rev) !== cur.rev && !sameText) {
+    if (sameText) return false;
+    if (Number(base) !== cur.rev) {
       // Op twee apparaten tegelijk bewerkt: de versie op de server blijft staan,
-      // die van dit apparaat komt ernaast als kopie, zodat er niets verloren gaat.
+      // die van dit apparaat komt ernaast als kopie (van jezelf), zodat er niets verloren gaat.
       conflicts.push(id);
       if (!n.deleted_at) {
-        stmts.push(bump(), env.DB.prepare(
+        stmts.push(bump(env), env.DB.prepare(
           `INSERT INTO notes (id, user_id, title, body, kind, pinned, labels, color, deleted_at, created_at, updated_at, rev, seq)
-           VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?, 1, ${seq})`
-        ).bind(randomToken(12), user.id, `${n.title || 'Notitie'} (andere versie)`.slice(0, MAX_TITLE), n.body, n.kind, n.labels, n.color, t, n.updated_at, user.id));
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?, 1, ${SEQ})`
+        ).bind(randomToken(12), user.id, `${n.title || 'Notitie'} (andere versie)`.slice(0, MAX_TITLE), n.body, n.kind, n.labels, n.color, t, n.updated_at));
       }
-      continue;
+      return null;
     }
-    // Tekst flink gewijzigd en de laatste versie is ouder dan een kwartier: oude tekst bewaren.
-    if (!sameText && (cur.title || cur.body)) {
+    if (cur.title || cur.body) {
+      // De oude tekst bewaren als de laatste bewaarde versie ouder is dan een kwartier.
       stmts.push(env.DB.prepare(
         `INSERT INTO note_versions (note_id, title, body, kind, saved_at)
          SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM note_versions WHERE note_id = ? AND saved_at > ?)`
       ).bind(id, cur.title, cur.body, cur.kind, cur.updated_at, id, t - VERSION_GAP));
     }
-    stmts.push(bump(), env.DB.prepare(
-      `UPDATE notes SET title = ?, body = ?, kind = ?, pinned = ?, labels = ?, color = ?, archived_at = ?, remind_at = ?, deleted_at = ?, updated_at = ?, rev = rev + 1, seq = ${seq} WHERE id = ?`
-    ).bind(n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, n.updated_at, user.id, id));
+    return true;
+  };
+
+  for (const c of changes) {
+    const id = String(c?.id ?? '');
+    if (!NOTE_ID_RE.test(id)) continue;
+    const cur = existing.get(id);
+    if (cur?.purged) continue;
+
+    // Notitie van iemand anders die met mij gedeeld is.
+    if (cur && cur.user_id !== user.id) {
+      const share = shares.get(id);
+      if (!share) continue;
+      if (c.purged || c.deleted_at) {
+        // "Weghalen" betekent hier: niet meer met mij delen.
+        stmts.push(
+          env.DB.prepare('DELETE FROM note_shares WHERE note_id = ? AND user_id = ?').bind(id, user.id),
+          bump(env),
+          env.DB.prepare(`INSERT INTO share_removals (note_id, user_id, seq) VALUES (?, ?, ${SEQ})`).bind(id, user.id),
+          bump(env),
+          env.DB.prepare(`UPDATE notes SET seq = ${SEQ} WHERE id = ?`).bind(id)
+        );
+        continue;
+      }
+      const mine = clean(c, share);
+      stmts.push(env.DB.prepare(
+        'UPDATE note_shares SET pinned = ?, labels = ?, color = ?, archived_at = ?, remind_at = ? WHERE note_id = ? AND user_id = ?'
+      ).bind(mine.pinned, mine.labels, mine.color, mine.archived_at, mine.remind_at, id, user.id));
+      const n = clean(c, cur);
+      const text = share.can_write ? writeText(id, cur, n, c.base_rev) : false;
+      stmts.push(bump(env), text
+        ? env.DB.prepare(`UPDATE notes SET title = ?, body = ?, kind = ?, updated_at = ?, rev = rev + 1, seq = ${SEQ} WHERE id = ?`)
+          .bind(n.title, n.body, n.kind, n.updated_at, id)
+        : env.DB.prepare(`UPDATE notes SET seq = ${SEQ} WHERE id = ?`).bind(id));
+      continue;
+    }
+
+    if (c.purged) {
+      if (!cur) continue;
+      stmts.push(bump(env), env.DB.prepare(
+        `UPDATE notes SET title = '', body = '', labels = '[]', remind_at = NULL, pinned = 0, purged = 1, deleted_at = COALESCE(deleted_at, ?), rev = rev + 1, seq = ${SEQ} WHERE id = ?`
+      ).bind(t, id), env.DB.prepare('DELETE FROM note_versions WHERE note_id = ?').bind(id),
+      // Wie hem gedeeld kreeg, moet hem ook kwijtraken.
+      env.DB.prepare(`INSERT INTO share_removals (note_id, user_id, seq) SELECT ?, user_id, ${SEQ} FROM note_shares WHERE note_id = ?`).bind(id, id),
+      env.DB.prepare('DELETE FROM note_shares WHERE note_id = ?').bind(id));
+      continue;
+    }
+
+    const n = clean(c, cur);
+    if (!cur) {
+      stmts.push(bump(env), env.DB.prepare(
+        `INSERT INTO notes (id, user_id, title, body, kind, pinned, labels, color, archived_at, remind_at, deleted_at, created_at, updated_at, rev, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ${SEQ})`
+      ).bind(id, user.id, n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, Number(c.created_at) || t, n.updated_at));
+      continue;
+    }
+
+    if (writeText(id, cur, n, c.base_rev) === null) continue;
+    stmts.push(bump(env), env.DB.prepare(
+      `UPDATE notes SET title = ?, body = ?, kind = ?, pinned = ?, labels = ?, color = ?, archived_at = ?, remind_at = ?, deleted_at = ?, updated_at = ?, rev = rev + 1, seq = ${SEQ} WHERE id = ?`
+    ).bind(n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, n.updated_at, id));
   }
 
   if (stmts.length) await env.DB.batch(stmts);
   const res = await changesSince(env, user, since);
   // De serverversie van een conflict kan ouder zijn dan de cursor van het apparaat: altijd meesturen.
   const missing = conflicts.filter((id) => !res.notes.some((n) => n.id === id));
-  if (missing.length) {
-    const { results } = await env.DB.prepare(
-      `SELECT ${NOTE_COLS} FROM notes WHERE user_id = ? AND id IN (${missing.map(() => '?').join(',')})`
-    ).bind(user.id, ...missing).all();
-    res.notes.push(...results.map(out));
+  for (const id of missing) {
+    const one = await noteFor(env, user, id);
+    if (one) res.notes.push(one);
   }
   return json({ ...res, conflicts });
 }
 
+// Eén notitie zoals deze gebruiker hem ziet (eigen of gedeeld), of null.
+async function noteFor(env, user, id) {
+  const own = await env.DB.prepare(
+    `SELECT ${NOTE_COLS}, (SELECT COUNT(*) FROM note_shares s WHERE s.note_id = n.id) AS shared_count FROM notes n WHERE n.id = ? AND n.user_id = ?`
+  ).bind(id, user.id).first();
+  if (own) return out(own);
+  const shared = await env.DB.prepare(
+    `SELECT ${NOTE_COLS}, s.can_write, s.pinned AS s_pinned, s.labels AS s_labels, s.color AS s_color,
+            s.archived_at AS s_archived_at, s.remind_at AS s_remind_at, u.full_name AS owner_name
+       FROM note_shares s JOIN notes n ON n.id = s.note_id JOIN users u ON u.id = n.user_id
+      WHERE n.id = ? AND s.user_id = ?`
+  ).bind(id, user.id).first();
+  return shared ? outShared(shared) : null;
+}
+
+async function canRead(env, user, id) {
+  const row = await env.DB.prepare(
+    `SELECT 1 FROM notes n WHERE n.id = ? AND n.purged = 0
+        AND (n.user_id = ? OR EXISTS (SELECT 1 FROM note_shares s WHERE s.note_id = n.id AND s.user_id = ?))`
+  ).bind(id, user.id, user.id).first();
+  if (!row) throw new HttpError(404, 'Notitie niet gevonden');
+}
+
 async function versions(env, user, id) {
-  const note = await env.DB.prepare('SELECT id FROM notes WHERE id = ? AND user_id = ? AND purged = 0').bind(id, user.id).first();
-  if (!note) throw new HttpError(404, 'Notitie niet gevonden');
+  await canRead(env, user, id);
   await env.DB.prepare(
     `DELETE FROM note_versions WHERE note_id = ? AND id NOT IN (SELECT id FROM note_versions WHERE note_id = ? ORDER BY saved_at DESC LIMIT ${MAX_VERSIONS})`
   ).bind(id, id).run();
   const { results } = await env.DB.prepare(
     'SELECT id, title, body, kind, saved_at FROM note_versions WHERE note_id = ? ORDER BY saved_at DESC'
   ).bind(id).all();
+  return json(results);
+}
+
+// ---------- Delen ----------
+
+async function ownNote(env, user, id) {
+  const note = await env.DB.prepare('SELECT id FROM notes WHERE id = ? AND user_id = ? AND purged = 0').bind(id, user.id).first();
+  if (!note) throw new HttpError(404, 'Alleen de eigenaar kan deze notitie delen');
+}
+
+async function listShares(env, user, id) {
+  await ownNote(env, user, id);
+  const { results } = await env.DB.prepare(
+    `SELECT u.id AS user_id, u.username, u.full_name, s.can_write
+       FROM note_shares s JOIN users u ON u.id = s.user_id WHERE s.note_id = ? ORDER BY u.full_name`
+  ).bind(id).all();
+  return json(results.map((r) => ({ ...r, can_write: !!r.can_write })));
+}
+
+async function addShare(env, user, id, request) {
+  await ownNote(env, user, id);
+  const b = await body(request);
+  const target = await env.DB.prepare("SELECT id, full_name FROM users WHERE username = ? AND status = 'active'")
+    .bind(str(b.username, 32).toLowerCase()).first();
+  if (!target) throw new HttpError(404, 'Geen actieve gebruiker met deze gebruikersnaam');
+  if (target.id === user.id) throw new HttpError(400, 'Je kunt een notitie niet met jezelf delen');
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO note_shares (note_id, user_id, can_write, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (note_id, user_id) DO UPDATE SET can_write = excluded.can_write`
+    ).bind(id, target.id, b.can_write === false ? 0 : 1, now()),
+    // Nieuw nummer, zodat de ontvanger (en je eigen apparaten) de notitie meteen binnenkrijgen.
+    bump(env),
+    env.DB.prepare(`UPDATE notes SET seq = ${SEQ} WHERE id = ?`).bind(id)
+  ]);
+  return json({ ok: true, full_name: target.full_name });
+}
+
+async function removeShare(env, user, id, userId) {
+  await ownNote(env, user, id);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM note_shares WHERE note_id = ? AND user_id = ?').bind(id, Number(userId)),
+    bump(env),
+    env.DB.prepare(`INSERT INTO share_removals (note_id, user_id, seq) VALUES (?, ?, ${SEQ})`).bind(id, Number(userId)),
+    bump(env),
+    env.DB.prepare(`UPDATE notes SET seq = ${SEQ} WHERE id = ?`).bind(id)
+  ]);
+  return json({ ok: true });
+}
+
+// Wie er zijn om mee te delen (actieve gebruikers behalve jijzelf).
+async function people(env, user) {
+  const { results } = await env.DB.prepare(
+    "SELECT username, full_name FROM users WHERE status = 'active' AND id != ? ORDER BY full_name"
+  ).bind(user.id).all();
   return json(results);
 }
 
@@ -242,7 +395,7 @@ function requireAdmin(user) {
 async function adminUsers(env) {
   const { results } = await env.DB.prepare(
     `SELECT u.id, u.username, u.full_name, u.email, u.status, u.is_admin, u.created_at,
-            (SELECT COUNT(*) FROM notes n WHERE n.user_id = u.id AND n.purged = 0) AS notes
+            (SELECT COUNT(*) FROM notes n WHERE n.user_id = u.id AND n.purged = 0 AND n.deleted_at IS NULL) AS notes
        FROM users u ORDER BY u.status = 'pending' DESC, u.created_at DESC`
   ).all();
   return json(results.map((u) => ({ ...u, is_admin: !!u.is_admin })));
@@ -304,7 +457,13 @@ async function route(request, env) {
   if (p === 'sync' && m === 'POST') return sync(env, user, request);
 
   const [a, b, c, d] = p.split('/');
-  if (a === 'notes' && NOTE_ID_RE.test(b || '') && c === 'versions' && !d && m === 'GET') return versions(env, user, b);
+  if (p === 'people' && m === 'GET') return people(env, user);
+  if (a === 'notes' && NOTE_ID_RE.test(b || '')) {
+    if (c === 'versions' && !d && m === 'GET') return versions(env, user, b);
+    if (c === 'shares' && !d && m === 'GET') return listShares(env, user, b);
+    if (c === 'shares' && !d && m === 'POST') return addShare(env, user, b, request);
+    if (c === 'shares' && d && m === 'DELETE') return removeShare(env, user, b, d);
+  }
   if (a === 'admin') {
     requireAdmin(user);
     if (b === 'users' && !c && m === 'GET') return adminUsers(env);
