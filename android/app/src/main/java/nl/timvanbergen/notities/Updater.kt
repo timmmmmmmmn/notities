@@ -2,6 +2,8 @@ package nl.timvanbergen.notities
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -10,7 +12,6 @@ import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.widget.ProgressBar
 import android.widget.Toast
 import org.json.JSONObject
 import java.io.File
@@ -18,18 +19,21 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Automatische updates: kijkt op GitHub of er een nieuwere release van de app is
- * (tag v1.0.N, waarbij N het versienummer is), en installeert die na een tik op "Bijwerken".
+ * Automatische updates. De app kijkt op GitHub of er een nieuwere release is (tag v1.0.N),
+ * downloadt die stil op de achtergrond en installeert hem zodra je de app wegzet,
+ * zodat je nooit midden in het typen wordt onderbroken.
  */
 object Updater {
 
     private const val LATEST = "https://api.github.com/repos/timmmmmmmmn/notities/releases/latest"
     private const val PREFS = "notities-update"
-    private const val CHECK_EVERY = 6 * 60 * 60 * 1000L
+    private const val CHECK_EVERY = 3 * 60 * 60 * 1000L
+    private const val CHANNEL = "updates"
 
     private data class Release(val code: Long, val name: String, val notes: String, val url: String)
 
     @Volatile private var busy = false
+    @Volatile private var ready: File? = null
     private var waitingForPermission: Release? = null
 
     fun currentCode(context: Context): Long =
@@ -38,14 +42,22 @@ object Updater {
     fun currentName(context: Context): String =
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
 
-    /** Bij het openen van de app: hooguit eens per zes uur kijken. */
+    /** Bij openen en terugkomen in de app: hooguit eens per drie uur kijken. */
     fun checkQuietly(activity: Activity) {
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (System.currentTimeMillis() - prefs.getLong("checked", 0L) < CHECK_EVERY) return
         check(activity, manual = false)
     }
 
-    /** Altijd kijken, en laten weten als alles al bijgewerkt is. */
+    /** Net bijgewerkt? Dan één keer melden welke versie het nu is. */
+    fun justUpdated(context: Context): String? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val now = currentCode(context)
+        val before = prefs.getLong("seen", 0L)
+        prefs.edit().putLong("seen", now).apply()
+        return if (before in 1 until now) currentName(context) else null
+    }
+
     fun check(activity: Activity, manual: Boolean) {
         if (busy) return
         busy = true
@@ -62,7 +74,7 @@ object Updater {
                 if (activity.isFinishing) return@runOnUiThread
                 when {
                     release == null -> if (manual) toast(activity, "Kon niet controleren op updates")
-                    release.code > currentCode(activity) -> offer(activity, release)
+                    release.code > currentCode(activity) -> start(activity, release, manual)
                     manual -> toast(activity, "Je hebt de nieuwste versie (${currentName(activity)})")
                 }
             }
@@ -74,7 +86,14 @@ object Updater {
         val release = waitingForPermission ?: return
         if (!activity.packageManager.canRequestPackageInstalls()) return
         waitingForPermission = null
-        download(activity, release)
+        download(activity, release, installNow = true)
+    }
+
+    /** De app gaat naar de achtergrond: klaarstaande update nu installeren. */
+    fun installIfReady(context: Context) {
+        val file = ready ?: return
+        ready = null
+        Thread { runCatching { install(context, file) } }.start()
     }
 
     private fun fetchLatest(): Release? {
@@ -101,42 +120,25 @@ object Updater {
         }
     }
 
-    private fun offer(activity: Activity, release: Release) {
-        val notes = release.notes.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
-        AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Nieuwe versie ${release.name}")
-            .setMessage(if (notes.isNotEmpty()) "Wat is er nieuw: $notes" else "Er staat een nieuwe versie van Notities klaar.")
-            .setPositiveButton("Bijwerken") { _, _ -> start(activity, release) }
-            .setNegativeButton("Later", null)
-            .show()
-    }
-
-    private fun start(activity: Activity, release: Release) {
+    private fun start(activity: Activity, release: Release, manual: Boolean) {
         if (!activity.packageManager.canRequestPackageInstalls()) {
-            // Eenmalig: Android vraagt of Notities apps mag installeren (alleen voor zijn eigen updates).
+            // Eenmalig: Android vraagt of Notities zijn eigen updates mag installeren. Daarna gaat het vanzelf.
             waitingForPermission = release
             AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Toestemming nodig")
-                .setMessage("Zet in het volgende scherm \"Toestaan van deze bron\" aan, zodat Notities zichzelf kan bijwerken. Daarna gaat de update vanzelf verder.")
+                .setTitle("Automatisch bijwerken aanzetten")
+                .setMessage("Er staat versie ${release.name} klaar. Zet in het volgende scherm \"Toestaan van deze bron\" aan; daarna werkt Notities zichzelf voortaan vanzelf bij.")
                 .setPositiveButton("Naar instellingen") { _, _ ->
-                    activity.startActivity(
-                        Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}"))
-                    )
+                    activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
                 }
-                .setNegativeButton("Annuleren") { _, _ -> waitingForPermission = null }
+                .setNegativeButton("Later") { _, _ -> waitingForPermission = null }
                 .show()
             return
         }
-        download(activity, release)
+        download(activity, release, installNow = manual)
     }
 
-    private fun download(activity: Activity, release: Release) {
-        val dialog = AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Bijwerken naar ${release.name}")
-            .setMessage("Downloaden…")
-            .setView(ProgressBar(activity).apply { isIndeterminate = true; setPadding(0, 32, 0, 32) })
-            .setCancelable(false)
-            .show()
+    private fun download(activity: Activity, release: Release, installNow: Boolean) {
+        if (installNow) toast(activity, "Versie ${release.name} wordt gedownload…")
         Thread {
             val file = File(activity.cacheDir, "notities-update.apk")
             val ok = try {
@@ -147,14 +149,21 @@ object Updater {
                 conn.readTimeout = 60_000
                 conn.inputStream.use { input -> file.outputStream().use { input.copyTo(it) } }
                 conn.disconnect()
-                install(activity, file)
                 true
             } catch (_: Exception) {
                 false
             }
             activity.runOnUiThread {
-                dialog.dismiss()
-                if (!ok) toast(activity, "Downloaden mislukt, probeer het later opnieuw")
+                if (!ok) {
+                    if (installNow) toast(activity, "Downloaden mislukt, probeer het later opnieuw")
+                    return@runOnUiThread
+                }
+                if (installNow || activity.isFinishing) {
+                    Thread { runCatching { install(activity, file) } }.start()
+                } else {
+                    ready = file
+                    (activity as? MainActivity)?.updateReady(release.name)
+                }
             }
         }.start()
     }
@@ -163,7 +172,7 @@ object Updater {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
-            // Vanaf Android 12 kunnen volgende updates zonder extra bevestiging (als Notities zelf de vorige installeerde).
+            // Vanaf Android 12 zonder extra bevestiging (als Notities zelf de vorige versie installeerde).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
             }
@@ -181,6 +190,24 @@ object Updater {
         }
     }
 
+    /** Moet Android toch nog even bevestigen terwijl de app weg is: dan via een melding. */
+    fun askViaNotification(context: Context, confirm: Intent) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (manager.getNotificationChannel(CHANNEL) == null) {
+            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Updates", NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        val tap = PendingIntent.getActivity(context, 7, confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notification = android.app.Notification.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setColor(context.getColor(R.color.launcher_bg))
+            .setContentTitle("Nieuwe versie van Notities")
+            .setContentText("Tik om de update te installeren")
+            .setContentIntent(tap)
+            .setAutoCancel(true)
+            .build()
+        runCatching { manager.notify(7, notification) }
+    }
+
     private fun toast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_LONG).show()
 }
 
@@ -191,7 +218,11 @@ class InstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
                 val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
-                context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                // Alleen meteen tonen als de app open is; anders mag Android het scherm niet openen.
+                val shown = MainActivity.inFront && runCatching {
+                    context.startActivity(Intent(confirm).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }.isSuccess
+                if (!shown) Updater.askViaNotification(context, confirm)
             }
             PackageInstaller.STATUS_SUCCESS -> Unit
             else -> {

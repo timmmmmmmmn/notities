@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="nieuw" android:enabled="true" android:icon="@drawable/sc_note"
+        android:shortcutShortLabel="@string/sc_note" android:shortcutLongLabel="@string/sc_note">
+        <intent android:action="nl.timvanbergen.notities.NIEUW" android:targetPackage="nl.timvanbergen.notities" android:targetClass="nl.timvanbergen.notities.MainActivity">
+            <extra android:name="kind" android:value="tekst" />
+        </intent>
+    </shortcut>
+    <shortcut android:shortcutId="lijst" android:enabled="true" android:icon="@drawable/sc_list"
+        android:shortcutShortLabel="@string/sc_list" android:shortcutLongLabel="@string/sc_list">
+        <intent android:action="nl.timvanbergen.notities.NIEUW" android:targetPackage="nl.timvanbergen.notities" android:targetClass="nl.timvanbergen.notities.MainActivity">
+            <extra android:name="kind" android:value="lijst" />
+        </intent>
+    </shortcut>
+    <shortcut android:shortcutId="dag" android:enabled="true" android:icon="@drawable/sc_day"
+        android:shortcutShortLabel="@string/sc_day" android:shortcutLongLabel="@string/sc_day">
+        <intent android:action="nl.timvanbergen.notities.NIEUW" android:targetPackage="nl.timvanbergen.notities" android:targetClass="nl.timvanbergen.notities.MainActivity">
+            <extra android:name="kind" android:value="dag" />
+        </intent>
+    </shortcut>
+</shortcuts>

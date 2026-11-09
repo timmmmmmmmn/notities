@@ -3,6 +3,7 @@ package nl.timvanbergen.notities
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.RectF
@@ -21,19 +22,22 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import nl.timvanbergen.notities.glass.GlassBar
 import nl.timvanbergen.notities.glass.GlassMenu
 import nl.timvanbergen.notities.glass.records.GlassMenuItemRecord
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * Notities als app. De website zit in de app zelf (assets/www) en wordt onder het eigen webadres
  * getoond, zodat hij ook zonder internet opent; alleen /api gaat naar de server.
- * De menu's zijn hier glazen menu's van de app (Android 13+), de rest van de pagina blijft plat.
+ * De navigatiebalk en de menu's zijn glas van de app zelf (Android 13+), de rest van de pagina blijft plat.
  */
 class MainActivity : ComponentActivity() {
 
@@ -42,6 +46,12 @@ class MainActivity : ComponentActivity() {
     private var glassMenu: GlassMenu? = null
     @Volatile private var insetTop = 0f
     @Volatile private var insetBottom = 0f
+
+    // Een snelkoppeling, melding of gedeelde tekst wacht tot de pagina klaar is (ingelogd en geladen).
+    private var pending: String? = null
+    private var pageReady = false
+
+    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,7 +107,7 @@ class MainActivity : ComponentActivity() {
         web.webChromeClient = WebChromeClient()
         web.webViewClient = Client()
 
-        // Terug-knop: eerst menu, instellingen of de open notitie sluiten, anders de app wegzetten.
+        // Terug-knop: eerst menu, paneel of de open notitie sluiten, anders de app wegzetten.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 web.evaluateJavascript("window.notitiesBack ? window.notitiesBack() : false") { handled ->
@@ -106,8 +116,43 @@ class MainActivity : ComponentActivity() {
             }
         })
 
+        Herinneringen.channel(this)
+        pending = actionOf(intent)
         if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(HOME)
         Updater.checkQuietly(this)
+    }
+
+    /** Wat er moet gebeuren voor een snelkoppeling, melding of gedeelde tekst, als stukje JavaScript. */
+    private fun actionOf(intent: Intent?): String? {
+        intent ?: return null
+        val note = intent.getStringExtra(Herinneringen.EXTRA_NOTE)
+        if (note != null) return "window.notitiesOpen && notitiesOpen(${JSONObject.quote(note)})"
+        return when (intent.action) {
+            ACTION_NEW -> {
+                val kind = intent.getStringExtra("kind") ?: "tekst"
+                "window.notitiesNew && notitiesNew(${JSONObject.quote(kind)})"
+            }
+            Intent.ACTION_SEND -> {
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return null
+                val title = intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty()
+                "window.notitiesNew && notitiesNew('tekst', ${JSONObject.quote(title)}, ${JSONObject.quote(text)})"
+            }
+            else -> null
+        }
+    }
+
+    private fun runPending() {
+        val js = pending ?: return
+        if (!pageReady) return
+        web.evaluateJavascript(js) { done -> if (done == "true") pending = null }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        actionOf(intent)?.let {
+            pending = it
+            runPending()
+        }
     }
 
     private fun setDarkBars(dark: Boolean) {
@@ -117,19 +162,23 @@ class MainActivity : ComponentActivity() {
 
     private fun pushInsets() {
         web.evaluateJavascript(
-            "(function(r){r.setProperty('--sat','${insetTop}px');r.setProperty('--sab','${insetBottom}px');})(document.documentElement.style)",
+            "(function(r){r.setProperty('--sat','${insetTop}px');r.setProperty('--sab','${insetBottom}px');})(document.documentElement.style);" +
+                "window.dispatchEvent(new Event('resize'))",
             null
         )
+    }
+
+    private fun windowRect(box: JSONObject): RectF {
+        val density = resources.displayMetrics.density
+        val origin = IntArray(2).also { web.getLocationInWindow(it) }
+        val left = origin[0] + box.getDouble("x").toFloat() * density
+        val top = origin[1] + box.getDouble("y").toFloat() * density
+        return RectF(left, top, left + box.getDouble("w").toFloat() * density, top + box.getDouble("h").toFloat() * density)
     }
 
     /** Opent het glazen menu vanuit een knop in de pagina (positie in CSS-pixels). */
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun showGlassMenu(menu: JSONObject) {
-        val density = resources.displayMetrics.density
-        val origin = IntArray(2).also { web.getLocationInWindow(it) }
-        val left = origin[0] + menu.getDouble("x").toFloat() * density
-        val top = origin[1] + menu.getDouble("y").toFloat() * density
-        val from = RectF(left, top, left + menu.getDouble("w").toFloat() * density, top + menu.getDouble("h").toFloat() * density)
         val rows = menu.getJSONArray("items")
         val items = List(rows.length()) { i ->
             val row = rows.getJSONObject(i)
@@ -145,21 +194,57 @@ class MainActivity : ComponentActivity() {
                 heading = row.optBoolean("heading"),
             )
         }
-        glassMenu?.show(from, items, menu.optBoolean("dark")) { id ->
+        glassMenu?.show(windowRect(menu), items, menu.optBoolean("dark")) { id ->
             web.evaluateJavascript("window.notitiesGlassPick && notitiesGlassPick(${JSONObject.quote(id)})", null)
         }
+    }
+
+    /** De zwevende glazen navigatie; de pagina meet zelf waar die hoort te staan. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun showGlassBar(bar: JSONObject) {
+        val tabs = bar.getJSONArray("tabs")
+        glassMenu?.setBar(
+            windowRect(bar.getJSONObject("pill")),
+            windowRect(bar.getJSONObject("add")),
+            List(tabs.length()) { i ->
+                val tab = tabs.getJSONObject(i)
+                GlassBar.Tab(tab.getString("id"), tab.getString("title"), tab.getString("icon"))
+            },
+            bar.getString("active"),
+            bar.optBoolean("dark"),
+            bar.optBoolean("visible", true),
+        ) { id ->
+            web.evaluateJavascript("window.notitiesGlassNav && notitiesGlassNav(${JSONObject.quote(id)})", null)
+        }
+    }
+
+    /** Update is gedownload: zeggen dat hij erin gaat zodra je de app wegzet. */
+    fun updateReady(name: String) {
+        web.evaluateJavascript(
+            "window.notitiesToast && notitiesToast(${JSONObject.quote("Versie $name staat klaar en wordt geïnstalleerd zodra je de app sluit")})",
+            null
+        )
     }
 
     private fun onOurSite(): Boolean = web.url?.let { android.net.Uri.parse(it).host == HOST } ?: false
 
     override fun onResume() {
         super.onResume()
+        inFront = true
         Updater.resume(this)
+        Updater.checkQuietly(this)
     }
 
     override fun onPause() {
         super.onPause()
+        inFront = false
         CookieManager.getInstance().flush()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Pas installeren als de app weg is: dan wordt niemand midden in een notitie onderbroken.
+        Updater.installIfReady(this)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -197,7 +282,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        /** Geeft false terug als het hier niet kan (ouder dan Android 13); de pagina toont dan haar eigen menu. */
+        /** Of de glazen navigatie en menu's kunnen (Android 13+). */
+        @JavascriptInterface
+        fun glassUi(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+        /** Geeft false terug als het hier niet kan; de pagina toont dan haar eigen menu. */
         @JavascriptInterface
         fun glassMenu(json: String): Boolean {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
@@ -206,13 +295,44 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
+        @JavascriptInterface
+        fun glassBar(json: String) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+            val bar = JSONObject(json)
+            runOnUiThread { if (onOurSite()) showGlassBar(bar) }
+        }
+
+        /** Alle herinneringen opnieuw inplannen; bij de eerste ook om toestemming voor meldingen vragen. */
+        @JavascriptInterface
+        fun setReminders(json: String) {
+            val list = runCatching { JSONArray(json) }.getOrNull() ?: return
+            Herinneringen.replace(this@MainActivity, list.toString())
+            if (list.length() > 0 && Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                runOnUiThread { askNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
+            }
+        }
+
+        /** De pagina is ingelogd en klaar: wachtende acties uitvoeren, en melden als de app net is bijgewerkt. */
+        @JavascriptInterface
+        fun ready() {
+            runOnUiThread {
+                pageReady = true
+                runPending()
+                Updater.justUpdated(this@MainActivity)?.let { name ->
+                    web.evaluateJavascript("window.notitiesToast && notitiesToast(${JSONObject.quote("Bijgewerkt naar versie $name")})", null)
+                }
+            }
+        }
+
         /** Een notitie delen via het deelmenu van Android (WhatsApp, mail, ...). */
         @JavascriptInterface
         fun share(title: String, text: String) {
             val send = Intent(Intent.ACTION_SEND).setType("text/plain")
                 .putExtra(Intent.EXTRA_SUBJECT, title)
                 .putExtra(Intent.EXTRA_TEXT, text)
-            runOnUiThread { startActivity(Intent.createChooser(send, "Notitie delen")) }
+            runOnUiThread { startActivity(Intent.createChooser(send, "Delen")) }
         }
 
         @JavascriptInterface
@@ -244,6 +364,11 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
+        override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+            pageReady = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) glassMenu?.hideBar()
+        }
+
         override fun onPageCommitVisible(view: WebView, url: String?) = pushInsets()
 
         override fun onPageFinished(view: WebView, url: String?) {
@@ -252,8 +377,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        const val HOST = "notities.timvanbergen.nl"
-        const val HOME = "https://$HOST/"
+    companion object {
+        private const val HOST = "notities.timvanbergen.nl"
+        private const val HOME = "https://$HOST/"
+        const val ACTION_NEW = "nl.timvanbergen.notities.NIEUW"
+        @Volatile var inFront = false
     }
 }

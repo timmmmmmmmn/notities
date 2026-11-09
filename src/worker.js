@@ -11,6 +11,9 @@ const NOTE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_TITLE = 300;
 const MAX_BODY = 200000;
 const MAX_CHANGES = 100;
+const COLORS = ['', 'rood', 'oranje', 'geel', 'groen', 'blauw', 'paars', 'grijs'];
+const VERSION_GAP = 15 * 60e3;
+const MAX_VERSIONS = 50;
 
 async function body(request) {
   try {
@@ -100,10 +103,12 @@ async function changePassword(env, user, request) {
 // de notitie het volgende nummer uit users.note_seq; dat gebeurt in dezelfde batch (transactie),
 // zodat een apparaat nooit een wijziging overslaat.
 
-const NOTE_COLS = 'id, title, body, kind, pinned, deleted_at, purged, created_at, updated_at, rev, seq';
+const NOTE_COLS = 'id, title, body, kind, pinned, labels, color, archived_at, remind_at, deleted_at, purged, created_at, updated_at, rev, seq';
 
 function out(n) {
-  return { ...n, pinned: !!n.pinned, purged: !!n.purged };
+  let labels = [];
+  try { labels = JSON.parse(n.labels); } catch {}
+  return { ...n, labels, pinned: !!n.pinned, purged: !!n.purged };
 }
 
 async function changesSince(env, user, since) {
@@ -114,10 +119,19 @@ async function changesSince(env, user, since) {
   return { notes: results.map(out), cursor, more: results.length === 2000 };
 }
 
-function clean(c) {
+// Velden die een (oudere) app niet meestuurt, blijven zoals ze op de server staan.
+function clean(c, cur = {}) {
   const kind = c.kind === 'lijst' ? 'lijst' : 'tekst';
   const t = Number(c.updated_at);
+  const time = (v) => (v && Number.isFinite(Number(v)) ? Number(v) : null);
+  const labels = Array.isArray(c.labels)
+    ? JSON.stringify([...new Set(c.labels.map((l) => String(l).trim().slice(0, 40)).filter(Boolean))].slice(0, 20))
+    : cur.labels ?? '[]';
   return {
+    labels,
+    color: 'color' in c ? (COLORS.includes(c.color) ? c.color : '') : cur.color ?? '',
+    archived_at: 'archived_at' in c ? time(c.archived_at) : cur.archived_at ?? null,
+    remind_at: 'remind_at' in c ? time(c.remind_at) : cur.remind_at ?? null,
     title: String(c.title ?? '').slice(0, MAX_TITLE),
     body: String(c.body ?? '').slice(0, MAX_BODY),
     kind,
@@ -135,7 +149,7 @@ async function sync(env, user, request) {
   const existing = new Map();
   if (ids.length) {
     const { results } = await env.DB.prepare(
-      `SELECT id, user_id, title, body, kind, rev, purged FROM notes WHERE id IN (${ids.map(() => '?').join(',')})`
+      `SELECT id, user_id, title, body, kind, rev, purged, updated_at, labels, color, archived_at, remind_at FROM notes WHERE id IN (${ids.map(() => '?').join(',')})`
     ).bind(...ids).all();
     for (const r of results) existing.set(r.id, r);
   }
@@ -155,17 +169,17 @@ async function sync(env, user, request) {
     if (c.purged) {
       if (!cur) continue;
       stmts.push(bump(), env.DB.prepare(
-        `UPDATE notes SET title = '', body = '', pinned = 0, purged = 1, deleted_at = COALESCE(deleted_at, ?), rev = rev + 1, seq = ${seq} WHERE id = ?`
-      ).bind(t, user.id, id));
+        `UPDATE notes SET title = '', body = '', labels = '[]', remind_at = NULL, pinned = 0, purged = 1, deleted_at = COALESCE(deleted_at, ?), rev = rev + 1, seq = ${seq} WHERE id = ?`
+      ).bind(t, user.id, id), env.DB.prepare('DELETE FROM note_versions WHERE note_id = ?').bind(id));
       continue;
     }
 
-    const n = clean(c);
+    const n = clean(c, cur);
     if (!cur) {
       stmts.push(bump(), env.DB.prepare(
-        `INSERT INTO notes (id, user_id, title, body, kind, pinned, deleted_at, created_at, updated_at, rev, seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ${seq})`
-      ).bind(id, user.id, n.title, n.body, n.kind, n.pinned, n.deleted_at, Number(c.created_at) || t, n.updated_at, user.id));
+        `INSERT INTO notes (id, user_id, title, body, kind, pinned, labels, color, archived_at, remind_at, deleted_at, created_at, updated_at, rev, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ${seq})`
+      ).bind(id, user.id, n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, Number(c.created_at) || t, n.updated_at, user.id));
       continue;
     }
 
@@ -176,15 +190,22 @@ async function sync(env, user, request) {
       conflicts.push(id);
       if (!n.deleted_at) {
         stmts.push(bump(), env.DB.prepare(
-          `INSERT INTO notes (id, user_id, title, body, kind, pinned, deleted_at, created_at, updated_at, rev, seq)
-           VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, 1, ${seq})`
-        ).bind(randomToken(12), user.id, `${n.title || 'Notitie'} (andere versie)`.slice(0, MAX_TITLE), n.body, n.kind, t, n.updated_at, user.id));
+          `INSERT INTO notes (id, user_id, title, body, kind, pinned, labels, color, deleted_at, created_at, updated_at, rev, seq)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?, 1, ${seq})`
+        ).bind(randomToken(12), user.id, `${n.title || 'Notitie'} (andere versie)`.slice(0, MAX_TITLE), n.body, n.kind, n.labels, n.color, t, n.updated_at, user.id));
       }
       continue;
     }
+    // Tekst flink gewijzigd en de laatste versie is ouder dan een kwartier: oude tekst bewaren.
+    if (!sameText && (cur.title || cur.body)) {
+      stmts.push(env.DB.prepare(
+        `INSERT INTO note_versions (note_id, title, body, kind, saved_at)
+         SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM note_versions WHERE note_id = ? AND saved_at > ?)`
+      ).bind(id, cur.title, cur.body, cur.kind, cur.updated_at, id, t - VERSION_GAP));
+    }
     stmts.push(bump(), env.DB.prepare(
-      `UPDATE notes SET title = ?, body = ?, kind = ?, pinned = ?, deleted_at = ?, updated_at = ?, rev = rev + 1, seq = ${seq} WHERE id = ?`
-    ).bind(n.title, n.body, n.kind, n.pinned, n.deleted_at, n.updated_at, user.id, id));
+      `UPDATE notes SET title = ?, body = ?, kind = ?, pinned = ?, labels = ?, color = ?, archived_at = ?, remind_at = ?, deleted_at = ?, updated_at = ?, rev = rev + 1, seq = ${seq} WHERE id = ?`
+    ).bind(n.title, n.body, n.kind, n.pinned, n.labels, n.color, n.archived_at, n.remind_at, n.deleted_at, n.updated_at, user.id, id));
   }
 
   if (stmts.length) await env.DB.batch(stmts);
@@ -198,6 +219,18 @@ async function sync(env, user, request) {
     res.notes.push(...results.map(out));
   }
   return json({ ...res, conflicts });
+}
+
+async function versions(env, user, id) {
+  const note = await env.DB.prepare('SELECT id FROM notes WHERE id = ? AND user_id = ? AND purged = 0').bind(id, user.id).first();
+  if (!note) throw new HttpError(404, 'Notitie niet gevonden');
+  await env.DB.prepare(
+    `DELETE FROM note_versions WHERE note_id = ? AND id NOT IN (SELECT id FROM note_versions WHERE note_id = ? ORDER BY saved_at DESC LIMIT ${MAX_VERSIONS})`
+  ).bind(id, id).run();
+  const { results } = await env.DB.prepare(
+    'SELECT id, title, body, kind, saved_at FROM note_versions WHERE note_id = ? ORDER BY saved_at DESC'
+  ).bind(id).all();
+  return json(results);
 }
 
 // ---------- Beheer ----------
@@ -271,6 +304,7 @@ async function route(request, env) {
   if (p === 'sync' && m === 'POST') return sync(env, user, request);
 
   const [a, b, c, d] = p.split('/');
+  if (a === 'notes' && NOTE_ID_RE.test(b || '') && c === 'versions' && !d && m === 'GET') return versions(env, user, b);
   if (a === 'admin') {
     requireAdmin(user);
     if (b === 'users' && !c && m === 'GET') return adminUsers(env);

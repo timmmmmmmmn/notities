@@ -2,11 +2,16 @@
 
 Notities op je telefoon en je laptop: [notities.timvanbergen.nl](https://notities.timvanbergen.nl).
 
-- Notities en checklists, vastpinnen, zoeken, prullenbak (30 dagen)
+- Notities en checklists, vastpinnen, zoeken, archief en prullenbak (30 dagen)
+- Labels, notitiekleuren, kaartjes- of lijstweergave, sorteren
+- Opmaak (vet, koppen, opsommingen, afvinkvakjes, links) met een leesweergave
+- Herinneringen: in de app als echte melding, op de website zolang die openstaat
+- Eerdere versies van een notitie terugzetten, dagnotitie, alles exporteren als Markdown
 - Werkt offline: alles staat ook op het apparaat en synchroniseert vanzelf zodra je weer online bent
 - Op twee apparaten tegelijk bewerkt? Dan blijven beide versies bewaard
 - Accounts met goedkeuring: de eerste gebruiker wordt beheerder, nieuwe accounts keurt die goed in Instellingen
-- Android-app met de website ingebouwd en glazen menu's (Android 13+); werkt zichzelf bij via de releases hieronder
+- Android-app met de website ingebouwd, een zwevende glazen navigatiebalk en glazen menu's (Android 13+),
+  snelkoppelingen op het app-icoon, tekst delen naar Notities, en automatische updates op de achtergrond
 
 ## Opbouw
 
@@ -29,7 +34,7 @@ Online zetten: `npx wrangler d1 migrations apply DB --remote` (bij een nieuwe mi
 ## Android-app
 
 Bij elke push die `android/` of `public/` raakt, bouwt GitHub Actions een ondertekende APK en zet die bij
-[Releases](../../releases/latest). Download `Notities.apk` op je telefoon en installeer hem; daarna meldt de app zelf nieuwe versies.
+[Releases](../../releases/latest). Download `Notities.apk` op je telefoon en installeer hem. Daarna downloadt de app nieuwe versies zelf en installeert ze zodra je de app wegzet.
 
 Het glazen menu (`android/app/src/main/java/nl/timvanbergen/notities/glass`) is een port van
 [rit3zh/expo-glass-custom-menu](https://github.com/rit3zh/expo-glass-custom-menu) (MIT, zie `LICENSE` in die map).

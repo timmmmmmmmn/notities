@@ -32,7 +32,7 @@ class GlassBar internal constructor(private val overlay: GlassMenuOverlay, resou
   private val add = GlassMenuAnchor(resources).apply {
     glass = true
     cornerRadius = Radius
-    triggerConfig = GlassTriggerConfigRecord(tintColor = Color.valueOf(.184f, .827f, 1f), tintOpacity = .72f)
+    triggerConfig = GlassTriggerConfigRecord(tintColor = Color.valueOf(.647f, .114f, .129f), tintOpacity = .78f)
     content = ::drawAdd
   }
   private val fade = GlassSpring(.004f, .05f)
@@ -184,7 +184,7 @@ class GlassBar internal constructor(private val overlay: GlassMenuOverlay, resou
     fill.color = if (dark) Color.argb(46, 255, 255, 255) else Color.argb(26, 11, 13, 16)
     plate.set(slide.value, inset, slide.value + cell, height - inset)
     canvas.drawRoundRect(plate, radius, radius, fill)
-    val accent = if (dark) Color.rgb(127, 219, 255) else Color.rgb(0, 118, 186)
+    val accent = if (dark) Color.rgb(240, 124, 128) else Color.rgb(165, 28, 34)
     val muted = if (dark) Color.argb(235, 242, 243, 245) else Color.argb(225, 11, 13, 16)
     tabs.forEachIndexed { index, tab ->
       val color = if (tab.id == active) accent else muted
@@ -197,7 +197,7 @@ class GlassBar internal constructor(private val overlay: GlassMenuOverlay, resou
 
   private fun drawAdd(canvas: Canvas) {
     val bounds = add.placement
-    drawIcon(canvas, "plus", bounds.width() / 2f, bounds.height() / 2f, 26f, Color.rgb(11, 13, 16), 2.6f)
+    drawIcon(canvas, "plus", bounds.width() / 2f, bounds.height() / 2f, 26f, Color.rgb(251, 246, 220), 2.6f)
   }
 
   private fun drawIcon(canvas: Canvas, name: String, centerX: Float, centerY: Float, size: Float, color: Int, weight: Float) {

@@ -2,11 +2,15 @@ package nl.timvanbergen.notities.glass.content
 
 import android.graphics.Path
 import android.graphics.RectF
+import androidx.core.graphics.PathParser
 
 internal object GlassIcons {
   private val cache = HashMap<String, Path>()
 
-  fun path(name: String): Path? = cache[name] ?: build(name)?.also { cache[name] = it }
+  /** Een naam uit de lijst hieronder, of een SVG-pad (24×24) zoals de pagina dat meestuurt. */
+  fun path(name: String): Path? = cache[name] ?: (if (name.startsWith("M")) parse(name) else build(name))?.also { cache[name] = it }
+
+  private fun parse(data: String): Path? = runCatching { PathParser.createPathFromPathData(data) }.getOrNull()
 
   private fun calendar() = Path().apply {
     addRoundRect(RectF(3f, 5f, 21f, 21f), 3f, 3f, Path.Direction.CW)
