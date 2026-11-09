@@ -1,0 +1,58 @@
+name: APK bouwen
+
+# Bij elke wijziging aan de Android-app: een ondertekende APK bouwen en als release publiceren.
+# De app kijkt zelf op GitHub of er een nieuwere release is (zie Updater.kt).
+on:
+  push:
+    branches: [main]
+    paths: ['android/**', 'public/**', '.github/workflows/apk.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK 37 installeren
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-37.0" "build-tools;36.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Ondertekeningssleutel klaarzetten
+        run: echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/notities-release.jks"
+        env:
+          KEYSTORE_BASE64: ${{ secrets.NOTITIES_KEYSTORE_BASE64 }}
+
+      - name: APK bouwen
+        run: ./gradlew assembleRelease --no-configuration-cache --console=plain
+        env:
+          NOTITIES_KEYSTORE: ${{ runner.temp }}/notities-release.jks
+          NOTITIES_KEYSTORE_PASSWORD: ${{ secrets.NOTITIES_KEYSTORE_PASSWORD }}
+          NOTITIES_KEY_ALIAS: ${{ secrets.NOTITIES_KEY_ALIAS }}
+          NOTITIES_KEY_PASSWORD: ${{ secrets.NOTITIES_KEY_PASSWORD }}
+
+      - name: Release publiceren
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk Notities.apk
+          printf '%s\n' "${COMMIT_MSG:-Handmatig gebouwd}" > notes.md
+          gh release create "v1.0.${{ github.run_number }}" Notities.apk \
+            --title "Notities 1.0.${{ github.run_number }}" \
+            --notes-file notes.md \
+            --latest

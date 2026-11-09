@@ -1,0 +1,18 @@
+name = "notities"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "notities-db"
+database_id = "c357f237-c290-49e9-a42f-f34a76243732"
+migrations_dir = "migrations"
+
+[[routes]]
+pattern = "notities.timvanbergen.nl"
+custom_domain = true

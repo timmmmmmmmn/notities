@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Notities</title>
+<meta name="description" content="Je notities, op je telefoon en je laptop.">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#F6F7F9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Notities">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+
+<!-- Inloggen en registreren -->
+<div class="auth" id="auth" hidden>
+  <form class="auth-card" id="loginForm" novalidate>
+    <div class="brand"><span class="logo" aria-hidden="true"></span>Notities</div>
+    <h1>Inloggen</h1>
+    <div class="error" id="loginError" role="alert" hidden></div>
+    <label class="field-label" for="loginName">Gebruikersnaam of e-mail</label>
+    <input class="field" id="loginName" name="login" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    <label class="field-label" for="loginPw">Wachtwoord</label>
+    <input class="field" id="loginPw" name="password" type="password" autocomplete="current-password" required>
+    <button class="btn primary big" type="submit">Inloggen</button>
+    <p class="auth-foot">Nog geen account? <a href="#registreren" id="toRegister">Account aanmaken</a></p>
+  </form>
+
+  <form class="auth-card" id="registerForm" novalidate hidden>
+    <div class="brand"><span class="logo" aria-hidden="true"></span>Notities</div>
+    <h1>Account aanmaken</h1>
+    <div class="error" id="registerError" role="alert" hidden></div>
+    <label class="field-label" for="regUser">Gebruikersnaam</label>
+    <input class="field" id="regUser" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" placeholder="bijv. tim" required>
+    <label class="field-label" for="regName">Volledige naam</label>
+    <input class="field" id="regName" name="full_name" autocomplete="name" maxlength="100" required>
+    <label class="field-label" for="regEmail">E-mailadres</label>
+    <input class="field" id="regEmail" name="email" type="email" autocomplete="email" maxlength="200" required>
+    <label class="field-label" for="regPw">Wachtwoord</label>
+    <input class="field" id="regPw" name="password" type="password" autocomplete="new-password" minlength="10" required>
+    <span class="hint">Minimaal 10 tekens</span>
+    <button class="btn primary big" type="submit">Account aanmaken</button>
+    <p class="auth-foot">Heb je al een account? <a href="#inloggen" id="toLogin">Inloggen</a></p>
+  </form>
+
+  <div class="auth-card" id="pendingCard" hidden>
+    <div class="brand"><span class="logo" aria-hidden="true"></span>Notities</div>
+    <h1>Account aangemaakt</h1>
+    <p class="muted">Je account wacht op goedkeuring van de beheerder. Daarna kun je inloggen.</p>
+    <button class="btn big" type="button" id="pendingBack">Naar inloggen</button>
+  </div>
+</div>
+
+<!-- De app zelf -->
+<div class="app" id="app" hidden>
+  <aside class="side" id="side">
+    <header class="side-top">
+      <h1 id="listTitle">Notities</h1>
+      <div class="row">
+        <button class="icon-btn" id="moreBtn" type="button" aria-label="Menu"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+        <button class="icon-btn accent" id="newBtn" type="button" aria-label="Nieuwe notitie" title="Nieuwe notitie (Ctrl+Alt+N)"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+      </div>
+    </header>
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+      <input class="search" id="search" type="search" placeholder="Zoeken" autocomplete="off" aria-label="Zoeken in notities">
+    </div>
+    <div class="trash-bar" id="trashBar" hidden>
+      <span>Notities in de prullenbak worden na 30 dagen definitief verwijderd.</span>
+      <button class="link-btn" id="trashBack" type="button">Terug naar notities</button>
+    </div>
+    <div class="list" id="list" role="list"></div>
+    <div class="side-foot"><span class="sync" id="syncState"></span></div>
+    <button class="fab" id="fab" type="button" aria-label="Nieuwe notitie"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+  </aside>
+
+  <main class="pane" id="pane">
+    <div class="empty" id="emptyPane">
+      <div class="empty-mark" aria-hidden="true"></div>
+      <p>Kies een notitie of maak een nieuwe.</p>
+      <button class="btn primary" id="emptyNew" type="button">Nieuwe notitie</button>
+    </div>
+    <article class="editor" id="editor" hidden>
+      <header class="ed-top">
+        <button class="icon-btn back" id="backBtn" type="button" aria-label="Terug"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="ed-meta" id="edMeta"></span>
+        <div class="row">
+          <button class="icon-btn" id="pinBtn" type="button" aria-label="Vastpinnen" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 15v5"/></svg></button>
+          <button class="icon-btn" id="noteMenuBtn" type="button" aria-label="Opties"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
+        </div>
+      </header>
+      <div class="trash-note" id="trashNote" hidden>
+        <span>Deze notitie staat in de prullenbak.</span>
+        <div class="row">
+          <button class="btn" id="restoreBtn" type="button">Terugzetten</button>
+          <button class="btn danger" id="purgeBtn" type="button">Definitief verwijderen</button>
+        </div>
+      </div>
+      <div class="ed-scroll" id="edScroll">
+        <input class="ed-title" id="edTitle" placeholder="Titel" maxlength="300" autocomplete="off" aria-label="Titel">
+        <textarea class="ed-body" id="edBody" placeholder="Begin met typen…" aria-label="Notitie"></textarea>
+        <div class="checklist" id="checklist" hidden>
+          <div id="openItems"></div>
+          <button class="add-item" id="addItem" type="button"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Item toevoegen</button>
+          <details class="done-items" id="doneWrap" open>
+            <summary id="doneSummary"></summary>
+            <div id="doneItems"></div>
+          </details>
+        </div>
+      </div>
+    </article>
+  </main>
+</div>
+
+<!-- Instellingen -->
+<div class="sheet-back" id="settingsBack" hidden>
+  <section class="sheet" id="settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header class="sheet-top">
+      <h2 id="settingsTitle">Instellingen</h2>
+      <button class="icon-btn" id="settingsClose" type="button" aria-label="Sluiten"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </header>
+    <div class="sheet-body">
+      <section class="group">
+        <h3>Weergave</h3>
+        <div class="seg" id="themeSeg" role="radiogroup" aria-label="Thema">
+          <button type="button" data-v="systeem" role="radio">Systeem</button>
+          <button type="button" data-v="licht" role="radio">Licht</button>
+          <button type="button" data-v="donker" role="radio">Donker</button>
+        </div>
+      </section>
+
+      <form class="group" id="meForm" novalidate>
+        <h3>Account</h3>
+        <p class="muted small" id="meUser"></p>
+        <label class="field-label" for="meName">Naam</label>
+        <input class="field" id="meName" maxlength="100" autocomplete="name">
+        <label class="field-label" for="meEmail">E-mailadres</label>
+        <input class="field" id="meEmail" type="email" maxlength="200" autocomplete="email">
+        <div class="error" id="meError" role="alert" hidden></div>
+        <button class="btn" type="submit">Opslaan</button>
+      </form>
+
+      <form class="group" id="pwForm" novalidate>
+        <h3>Wachtwoord wijzigen</h3>
+        <label class="field-label" for="pwCur">Huidig wachtwoord</label>
+        <input class="field" id="pwCur" type="password" autocomplete="current-password">
+        <label class="field-label" for="pwNew">Nieuw wachtwoord</label>
+        <input class="field" id="pwNew" type="password" autocomplete="new-password" minlength="10">
+        <div class="error" id="pwError" role="alert" hidden></div>
+        <button class="btn" type="submit">Wachtwoord wijzigen</button>
+      </form>
+
+      <section class="group" id="adminGroup" hidden>
+        <h3>Gebruikers</h3>
+        <div id="adminList" class="users"></div>
+      </section>
+
+      <section class="group" id="appGroup" hidden>
+        <h3>App</h3>
+        <p class="muted small" id="appVersion"></p>
+        <button class="btn" id="updateBtn" type="button">Zoeken naar updates</button>
+      </section>
+
+      <section class="group">
+        <button class="btn danger" id="logoutBtn" type="button">Uitloggen</button>
+      </section>
+    </div>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
