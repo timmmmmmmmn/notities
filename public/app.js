@@ -1698,6 +1698,7 @@ function moreMenu(from) {
     { title: native?.share ? 'Alles delen als tekst' : 'Alles exporteren', subtitle: 'Markdown', icon: 'download', run: exportAll },
     !isPhone() && { title: 'Sneltoetsen', icon: 'keyboard', run: shortcutsSheet },
     { title: 'Instellingen', subtitle: state.me.full_name, icon: 'person', run: openSettings },
+    native?.checkForUpdate && { title: 'Zoeken naar updates', subtitle: `Versie ${native.appVersion?.() || ''}`.trim(), icon: 'sync', run: () => native.checkForUpdate() },
     { title: 'Broncode', subtitle: 'GitHub', icon: 'code', run: () => window.open(SOURCE, '_blank', 'noopener') }
   ]);
 }
