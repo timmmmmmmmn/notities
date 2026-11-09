@@ -40,3 +40,8 @@ Bij elke push die `android/` of `public/` raakt, bouwt GitHub Actions een ondert
 
 Het glazen menu (`android/app/src/main/java/nl/timvanbergen/notities/glass`) is een port van
 [rit3zh/expo-glass-custom-menu](https://github.com/rit3zh/expo-glass-custom-menu) (MIT, zie `LICENSE` in die map).
+
+## Mac-app
+
+`macos/` is Notities als Mac-app in Rust (AppKit), met glazen navigatie, native menu's en het
+spiekbriefje in de hoek rechtsonder. Installeren: `macos/install.sh`. Zie `macos/README.md`.
