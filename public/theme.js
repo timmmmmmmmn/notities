@@ -16,5 +16,10 @@
       root.style.setProperty('--sab', i[1] + 'px');
       native.setDark(dark);
     } catch (e) {}
+    // Glisse (Liquid Glass met echte breking) voor navigatie en schuifknoppen, als het toestel het aankan.
+    // app.js laadt het en haalt de klasse weg als het niet lukt; dan blijft de gewone navigatie.
+    try {
+      if (/Chrom(?:e|ium)\//.test(navigator.userAgent) && !localStorage.getItem('glisse-uit')) root.classList.add('glisse');
+    } catch (e) {}
   }
 })();

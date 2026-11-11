@@ -5,6 +5,13 @@ const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const native = window.NotitiesNative || null;
 const glassUi = !!(native?.glassUi && native.glassUi());
+// Glisse (glisse.js, zie glisse/): null als het toestel het niet aankan, dan blijft alles zoals het was.
+const glisse = document.documentElement.classList.contains('glisse')
+  ? import('./glisse.js').then((g) => (g.kan() ? g : null)).catch(() => null).then((g) => {
+    if (!g) document.documentElement.classList.remove('glisse');
+    return g;
+  })
+  : Promise.resolve(null);
 const TRASH_DAYS = 30;
 const DAY = 86400000;
 const COLORS = [
@@ -644,8 +651,12 @@ function setView(v) {
 // ---------- Glazen navigatie in de Android-app ----------
 
 let barFrame = 0;
+let glisseBar = null;
+let glisseMod = null;
 function syncGlassBar() {
-  if (!glassUi || barFrame) return;
+  // Zolang Glisse nog laadt geen native balk, anders flitst die even.
+  const wacht = document.documentElement.classList.contains('glisse') && !glisseBar;
+  if (!(glassUi || glisseBar) || wacht || barFrame) return;
   barFrame = requestAnimationFrame(() => {
     barFrame = 0;
     const box = (el) => {
@@ -656,16 +667,33 @@ function syncGlassBar() {
     const tabs = $$('#navPill [data-nav]').map((b) => ({ id: b.dataset.nav, title: b.textContent.trim(), icon: ICONS[names[b.dataset.nav]] }));
     const active = $('#navPill [aria-current="true"]')?.dataset.nav || 'notities';
     const visible = !$('#app').hidden && !pdf && $('#sheetBack').hidden && getComputedStyle($('#side')).display !== 'none';
+    const bar = { pill: box($('#navPill')), add: box($('#navAdd')), tabs, active, dark: document.documentElement.dataset.theme === 'donker', visible };
+    if (glisseBar) {
+      return glisseBar.update({ ...bar, tabs: tabs.map((t) => ({ ...t, svg: icon(names[t.id]) })), addSvg: icon('plus'), addLabel: 'Nieuwe notitie' });
+    }
     try {
-      native.glassBar(JSON.stringify({
-        pill: box($('#navPill')), add: box($('#navAdd')), tabs, active,
-        dark: document.documentElement.dataset.theme === 'donker', visible
-      }));
+      native.glassBar(JSON.stringify(bar));
     } catch (e) {}
   });
 }
 
 window.notitiesGlassNav = (id) => (id === 'add' ? newNote() : navTo(id, $(`#navPill [data-nav="${id}"]`)));
+
+glisse.then((g) => {
+  if (g) {
+    glisseBar = g.balk({
+      onNav: window.notitiesGlassNav,
+      z: 20,
+      onStop: () => {
+        glisseBar = glisseMod = null;
+        document.documentElement.classList.remove('glisse');
+        syncGlassBar();
+      }
+    });
+    glisseMod = g;
+  }
+  syncGlassBar();
+});
 
 function navTo(id, from) {
   haptic();
@@ -1776,6 +1804,7 @@ function openSettings() {
   $('#meName', body).value = state.me.full_name;
   $('#meEmail', body).value = state.me.email;
   theme(themePref());
+  glisseMod?.segmenten($('#themeSeg', body));
 
   const notes = [...state.notes.values()].filter(alive);
   const words = notes.reduce((s, n) => s + (n.body.replace(/\[[ x]\]/g, '').match(/\S+/g) || []).length + (n.title.match(/\S+/g) || []).length, 0);

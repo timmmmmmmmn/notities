@@ -273,6 +273,8 @@ svg.i.dots { stroke-width: 3.4; }
 .nav-add svg { width: 26px; height: 26px; stroke-width: 2.4; }
 /* In de Android-app (13+) tekent de app zelf een glazen balk op deze plek. */
 html.glass .nav-pill, html.glass .nav-add { visibility: hidden; }
+/* Glisse (glisse.js) tekent de navigatie in de pagina zelf, met echte breking; zie glisse/. */
+html.glisse .nav-pill, html.glisse .nav-add { visibility: hidden; }
 
 /* ---------- Editor ---------- */
 
