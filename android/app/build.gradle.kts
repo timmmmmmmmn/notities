@@ -52,7 +52,7 @@ android {
 
 // De website (../public) gaat in de app, zodat hij ook zonder internet opent.
 val webBundel by tasks.registering(Sync::class) {
-    from(rootProject.file("../public")) { exclude("sw.js", "_headers", ".DS_Store") }
+    from(rootProject.file("../public")) { exclude("sw.js", "_headers", ".DS_Store", "wp/**") }
     into(layout.projectDirectory.dir("src/main/assets/www"))
 }
 tasks.named("preBuild") { dependsOn(webBundel) }

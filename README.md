@@ -45,3 +45,7 @@ Het glazen menu (`android/app/src/main/java/nl/timvanbergen/notities/glass`) is 
 
 `macos/` is Notities als Mac-app in Rust (AppKit), met glazen navigatie, native menu's en het
 spiekbriefje in de hoek rechtsonder. Installeren: `macos/install.sh`. Zie `macos/README.md`.
+
+## Windows 10 Mobile (Lumia)
+
+`wp/build.mjs` maakt een versie voor EdgeHTML 13–15 in `public/wp/` (zelfde paden, modules als één ES2015-script met polyfills, CSS-variabelen ingevuld). De worker geeft oude Edge (en `?wp=1`, onthouden in een cookie) automatisch die bestanden. Na wijzigingen aan `public/`: `cd wp && npm install && node build.mjs`. De app (`wp/appx`, hosted web app) bouwt `.github/workflows/wp.yml` als `Notities.appx`; installeren gaat via Toko (toko.timvanbergen.nl).

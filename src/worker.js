@@ -474,6 +474,21 @@ async function route(request, env) {
   throw new HttpError(404, 'Niet gevonden');
 }
 
+// Windows 10 Mobile (Lumia): oude Edge kan de gewone site niet aan en krijgt de omgezette bestanden uit
+// public/wp/ (zie wp/build.mjs) op dezelfde adressen. De Lumia-app opent /?wp=1, dat blijft in een cookie staan.
+const OUDE_EDGE = /Edge\/1[2-8]\./;
+async function wpBestand(request, env, url) {
+  const wp = OUDE_EDGE.test(request.headers.get('user-agent') || '') || url.searchParams.has('wp') || /(^|;\s*)wp=1/.test(request.headers.get('cookie') || '');
+  if (!wp) return null;
+  const res = await env.ASSETS.fetch(new Request(new URL('/wp' + url.pathname, url), request));
+  if (res.status !== 200) return null;
+  const out = new Response(res.body, res);
+  out.headers.set('cache-control', 'no-cache');
+  out.headers.append('vary', 'User-Agent, Cookie');
+  if (url.searchParams.has('wp')) out.headers.append('set-cookie', 'wp=1; Path=/; Max-Age=31536000; Secure; SameSite=Lax');
+  return out;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -485,6 +500,10 @@ export default {
         console.error(err);
         return fail(500, 'Er ging iets mis op de server');
       }
+    }
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      const wp = await wpBestand(request, env, url);
+      if (wp) return wp;
     }
     return env.ASSETS.fetch(request);
   }
